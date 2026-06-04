@@ -1,7 +1,7 @@
 {
     "name": "MoCE-IR - Blackwell sm_120",
  "build": {
-        "dockerfile": "Dockerfile",
+        "dockerfile": "dockerfile",
         "context": ".."
     },
     "runArgs": [

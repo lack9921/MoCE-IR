@@ -43,5 +43,8 @@ RUN pip install --no-cache-dir \
     wandb scipy tqdm torchmetrics fvcore lightning tensorboard \
     yacs joblib natsort h5py gdown addict future lmdb pyyaml requests yapf lpips ninja packaging
 
+# 使用 .dockerignore 排除不必要的文件（如 .git, checkpoints/）
+COPY . /workspace/
+
 WORKDIR /workspace
 CMD ["bash"]
