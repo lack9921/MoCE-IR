@@ -29,7 +29,7 @@ def base_parser():
     parser.add_argument('--batch_size', type=int, default=4, help='Batch size per GPU.')
     parser.add_argument('--lr', type=float, default=2e-4, help='Learning rate.')
     parser.add_argument('--de_type', nargs='+', help='Degradation types for training/testing.')
-    parser.add_argument('--trainset', default="standard", help=["standard", "CDD11_all", "CDD11_single", "CDD11_double", "CDD11_triple"])
+    parser.add_argument('--trainset', default="standard", help=["standard", "lovif", "CDD11_all", "CDD11_single", "CDD11_double", "CDD11_triple"])
     parser.add_argument('--loss_type', default="L1", help='Loss type.')
     parser.add_argument('--patch_size', type=int, default=128, help='Input patch size.')
     parser.add_argument('--balance_loss_weight', type=float, default=0.01, help='Balance loss weight.')
@@ -48,6 +48,8 @@ def base_parser():
     parser.add_argument('--wblogger', action="store_true", help='Log to Weights & Biases.')
     parser.add_argument('--ckpt_dir', type=str, default="checkpoints", help='Checkpoint directory.')
     parser.add_argument('--num_gpus', type=int, default=1, help='Number of GPUs for training.')
+    parser.add_argument('--lovif', action='store_true', help='Use LoViF dataset (5 degradations).')
+    parser.add_argument('--lovif_val_dir', type=str, default=None, help='LoViF validation/test data root for --lovif mode.')
 
     return parser
 

@@ -18,7 +18,7 @@ from net.moce_ir import MoCEIR
 
 from options import train_options
 from utils.schedulers import LinearWarmupCosineAnnealingLR
-from data.dataset_utils import AIOTrainDataset, CDD11
+from data.dataset_utils import AIOTrainDataset, CDD11, LoViFDataset
 from utils.loss_utils import FFTLoss
 
 
@@ -116,7 +116,9 @@ def main(opt):
     checkpoint_callback = ModelCheckpoint(dirpath=checkpoint_path, every_n_epochs=5, save_top_k=-1, save_last=True)
     
     # Create datasets and dataloaders
-    if "CDD11" in opt.trainset:
+    if opt.lovif:
+        trainset = LoViFDataset(opt)
+    elif "CDD11" in opt.trainset:
         _, subset = opt.trainset.split("_")
         trainset = CDD11(opt, split="train", subset=subset)
     else:
