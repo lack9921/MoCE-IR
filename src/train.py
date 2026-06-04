@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger, TensorBoardLogger
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
+from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 from net.moce_ir import MoCEIR
 
@@ -54,6 +55,11 @@ class PLTrainModel(pl.LightningModule):
             stage_depth=opt.stage_depth, 
             rank_type=opt.rank_type, 
             complexity_scale=opt.complexity_scale,)
+
+        self.calc_lpips = None
+        if opt.lovif:
+            self.calc_lpips = LearnedPerceptualImagePatchSimilarity(
+                net_type='vgg', normalize=True).cuda()
 
         if opt.loss_type == "fft":
             self.loss_fn = nn.L1Loss()
@@ -108,6 +114,14 @@ class PLTrainModel(pl.LightningModule):
             track = LOVIF_TRACK_NAMES[de_id[i]]
             self.log(f"val_psnr/{track}", psnr_val, sync_dist=True, batch_size=1)
             self.log(f"val_ssim/{track}", ssim_val, sync_dist=True, batch_size=1)
+
+        # LPIPS on RGB (batch=1, single sample)
+        if self.calc_lpips is not None:
+            # Ensure tensors are on the right device
+            clean_rgb = clean_patch[:1]  # shape (1, C, H, W)
+            restored_rgb = restored[:1]
+            lpips_val = self.calc_lpips(restored_rgb, clean_rgb).item()
+            self.log("val_lpips", lpips_val, sync_dist=True, batch_size=1)
 
         return loss
 
