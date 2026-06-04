@@ -27,6 +27,11 @@ from utils.loss_utils import FFTLoss
 LOVIF_TRACK_NAMES = ['blur', 'haze', 'lowlight', 'rain', 'snow']
 
 
+def _to_y_channel(img_np):
+    """RGB [0,1] → Y luminance channel [0,1] (BT.601)."""
+    return np.dot(img_np[..., :3], [0.299, 0.587, 0.114])
+
+
 class PLTrainModel(pl.LightningModule):
     def __init__(self, opt):
         super().__init__()
@@ -92,9 +97,13 @@ class PLTrainModel(pl.LightningModule):
             restored_np = restored[i].detach().cpu().numpy().transpose(1, 2, 0)
             clean_np = clean_patch[i].detach().cpu().numpy().transpose(1, 2, 0)
 
-            psnr_val = peak_signal_noise_ratio(clean_np, restored_np, data_range=1)
+            # Y channel (BT.601) — matches LoViF competition metric
+            clean_y = _to_y_channel(clean_np)
+            restored_y = _to_y_channel(restored_np)
+
+            psnr_val = peak_signal_noise_ratio(clean_y, restored_y, data_range=1)
             ssim_val = structural_similarity(
-                clean_np, restored_np, data_range=1, channel_axis=-1)
+                clean_y, restored_y, data_range=1)
 
             track = LOVIF_TRACK_NAMES[de_id[i]]
             self.log(f"val_psnr/{track}", psnr_val, sync_dist=True, batch_size=1)
