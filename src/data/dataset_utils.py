@@ -343,6 +343,142 @@ class AIOTrainDataset(Dataset):
         return nonhazy_name
         
     
+# Track directory name mapping (input_key -> actual_dir_name)
+LOVIF_TRACKS = [
+    ('blur', 'Blur'),
+    ('haze', 'Haze'),
+    ('lowlight', 'Lowlight'),
+    ('rain', 'Rain'),
+    ('snow', 'Snow'),
+]
+
+
+class LoViFDataset(Dataset):
+    """
+    Dataset for LoViF 5-degradation all-in-one training.
+    Data structure:
+      {data_root}/{Blur|Haze|Lowlight|Rain|Snow}/GT/
+      {data_root}/{Blur|Haze|Lowlight|Rain|Snow}/LQ/
+    """
+    def __init__(self, args):
+        super(LoViFDataset, self).__init__()
+        self.args = args
+        self.patch_size = args.patch_size
+        self.toTensor = ToTensor()
+
+        self.data_root = args.data_file_dir
+
+        self.lr = []
+        self.hr = []
+
+        for idx, (key, dir_name) in enumerate(LOVIF_TRACKS):
+            lq_dir = os.path.join(self.data_root, dir_name, 'LQ')
+            gt_dir = os.path.join(self.data_root, dir_name, 'GT')
+
+            lq_files = sorted(glob.glob(os.path.join(lq_dir, '*')))
+            gt_files = sorted(glob.glob(os.path.join(gt_dir, '*')))
+
+            if len(lq_files) == 0:
+                raise ValueError(f"No images found in {lq_dir}")
+            if len(lq_files) != len(gt_files):
+                raise ValueError(f"Mismatch: {len(lq_files)} LQ vs {len(gt_files)} GT in {dir_name}")
+
+            self.lr += [{"img": f, "de_type": idx} for f in lq_files]
+            self.hr += [{"img": f, "de_type": idx} for f in gt_files]
+
+            print(f"  [{dir_name}] {len(lq_files)} samples")
+
+        print(f"[LoViFDataset] Total: {len(self.lr)} samples across 5 tracks")
+
+    def __getitem__(self, index):
+        lr_sample = self.lr[index]
+        hr_sample = self.hr[index]
+        de_id = lr_sample["de_type"]
+
+        lr = crop_img(np.array(Image.open(lr_sample["img"]).convert('RGB')), base=16)
+        hr = crop_img(np.array(Image.open(hr_sample["img"]).convert('RGB')), base=16)
+
+        lr, hr = random_augmentation(*self._crop_patch(lr, hr))
+
+        lr = self.toTensor(lr)
+        hr = self.toTensor(hr)
+
+        return [lr_sample["img"], de_id], lr, hr
+
+    def __len__(self):
+        return len(self.lr)
+
+    def _crop_patch(self, img_1, img_2):
+        H = img_1.shape[0]
+        W = img_1.shape[1]
+        ind_H = random.randint(0, H - self.args.patch_size)
+        ind_W = random.randint(0, W - self.args.patch_size)
+        patch_1 = img_1[ind_H:ind_H + self.args.patch_size, ind_W:ind_W + self.args.patch_size]
+        patch_2 = img_2[ind_H:ind_H + self.args.patch_size, ind_W:ind_W + self.args.patch_size]
+        return patch_1, patch_2
+
+
+class LoViFValDataset(Dataset):
+    """
+    Validation dataset for LoViF (center crop, no random augmentation).
+    Data structure:
+      {val_root}/{Blur|Haze|Lowlight|Rain|Snow}/GT/
+      {val_root}/{Blur|Haze|Lowlight|Rain|Snow}/LQ/
+    Fallback to data_file_dir if lovif_val_dir is not set.
+    """
+    def __init__(self, args):
+        super(LoViFValDataset, self).__init__()
+        self.args = args
+        self.patch_size = args.patch_size
+        self.toTensor = ToTensor()
+        self.val_root = args.lovif_val_dir if args.lovif_val_dir else args.data_file_dir
+
+        self.lr = []
+        self.hr = []
+
+        for idx, (key, dir_name) in enumerate(LOVIF_TRACKS):
+            lq_dir = os.path.join(self.val_root, dir_name, 'LQ')
+            gt_dir = os.path.join(self.val_root, dir_name, 'GT')
+
+            lq_files = sorted(glob.glob(os.path.join(lq_dir, '*')))
+            gt_files = sorted(glob.glob(os.path.join(gt_dir, '*')))
+
+            if len(lq_files) == 0:
+                print(f"  [WARN] No images found in {lq_dir}")
+                continue
+
+            self.lr += [{"img": f, "de_type": idx} for f in lq_files]
+            self.hr += [{"img": f, "de_type": idx} for f in gt_files]
+
+            print(f"  [{dir_name}] {len(lq_files)} samples")
+
+        print(f"[LoViFValDataset] Total: {len(self.lr)} samples")
+
+    def __getitem__(self, index):
+        lr_sample = self.lr[index]
+        hr_sample = self.hr[index]
+        de_id = lr_sample["de_type"]
+
+        lr = crop_img(np.array(Image.open(lr_sample["img"]).convert('RGB')), base=16)
+        hr = crop_img(np.array(Image.open(hr_sample["img"]).convert('RGB')), base=16)
+
+        # Center crop to patch_size for consistent validation
+        H, W, _ = lr.shape
+        if H >= self.patch_size and W >= self.patch_size:
+            top = (H - self.patch_size) // 2
+            left = (W - self.patch_size) // 2
+            lr = lr[top:top + self.patch_size, left:left + self.patch_size]
+            hr = hr[top:top + self.patch_size, left:left + self.patch_size]
+
+        lr = self.toTensor(lr)
+        hr = self.toTensor(hr)
+
+        return [lr_sample["img"], de_id], lr, hr
+
+    def __len__(self):
+        return len(self.lr)
+
+
 class IRBenchmarks(Dataset):
     def __init__(self, args):
         super(IRBenchmarks, self).__init__()
