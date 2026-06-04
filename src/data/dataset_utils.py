@@ -420,16 +420,18 @@ class LoViFDataset(Dataset):
 
 class LoViFValDataset(Dataset):
     """
-    Validation dataset for LoViF (no augmentation, no crop).
+    Validation dataset for LoViF (center crop, no random augmentation).
     Data structure:
       {val_root}/{Blur|Haze|Lowlight|Rain|Snow}/GT/
       {val_root}/{Blur|Haze|Lowlight|Rain|Snow}/LQ/
+    Fallback to data_file_dir if lovif_val_dir is not set.
     """
     def __init__(self, args):
         super(LoViFValDataset, self).__init__()
         self.args = args
+        self.patch_size = args.patch_size
         self.toTensor = ToTensor()
-        self.val_root = args.lovif_val_dir
+        self.val_root = args.lovif_val_dir if args.lovif_val_dir else args.data_file_dir
 
         self.lr = []
         self.hr = []
@@ -459,6 +461,14 @@ class LoViFValDataset(Dataset):
 
         lr = crop_img(np.array(Image.open(lr_sample["img"]).convert('RGB')), base=16)
         hr = crop_img(np.array(Image.open(hr_sample["img"]).convert('RGB')), base=16)
+
+        # Center crop to patch_size for consistent validation
+        H, W, _ = lr.shape
+        if H >= self.patch_size and W >= self.patch_size:
+            top = (H - self.patch_size) // 2
+            left = (W - self.patch_size) // 2
+            lr = lr[top:top + self.patch_size, left:left + self.patch_size]
+            hr = hr[top:top + self.patch_size, left:left + self.patch_size]
 
         lr = self.toTensor(lr)
         hr = self.toTensor(hr)
