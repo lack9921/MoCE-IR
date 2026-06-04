@@ -19,7 +19,7 @@ version.py
 *.gif
 *.pth
 *.zip
-*.json
+# *.json
 
 # template
 

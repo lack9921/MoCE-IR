@@ -1,0 +1,30 @@
+{
+    "name": "MoCE-IR - Blackwell sm_120",
+ "build": {
+        "dockerfile": "Dockerfile",
+        "context": ".."
+    },
+    "runArgs": [
+        "--gpus",
+        "all",
+        "--shm-size",
+        "16gb",
+        "--env",
+        "CUDA_VISIBLE_DEVICES=0"
+    ],
+    "mounts": [
+        "source=D:\\dataset,target=/datasets_host,type=bind,consistency=cached"
+    ],
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "ms-python.vscode-pylance"
+            ]
+        }
+    },
+    "workspaceFolder": "/workspace",
+    "remoteUser": "root",
+    "shutdownAction": "none",
+    "postCreateCommand": "echo 'PrivateSRLab environment ready!'"
+}
