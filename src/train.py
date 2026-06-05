@@ -196,17 +196,21 @@ def main(opt):
         except Exception as e:
             print(f"[WARN] Could not create validation dataset: {e}")
 
+    # Multi-GPU strategy (auto for single GPU, DDP for 2+)
+    strategy = "ddp_find_unused_parameters_true" if opt.num_gpus > 1 else "auto"
+
     # Create trainer
     trainer = pl.Trainer(
         max_epochs=opt.epochs,
         accelerator="gpu",
         devices=opt.num_gpus,
-        strategy="ddp_find_unused_parameters_true",
+        strategy=strategy,
         logger=logger,
         callbacks=[checkpoint_callback],
         accumulate_grad_batches=opt.accum_grad,
         deterministic=True,
-        check_val_every_n_epoch=5)
+        check_val_every_n_epoch=5,
+        enable_model_summary=False)
 
     # Optionally resume from a checkpoint
     if opt.resume_from:
