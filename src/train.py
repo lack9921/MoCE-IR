@@ -117,9 +117,8 @@ class PLTrainModel(pl.LightningModule):
 
         # LPIPS on RGB (batch=1, single sample)
         if self.calc_lpips is not None:
-            # Ensure tensors are on the right device
             clean_rgb = clean_patch[:1]  # shape (1, C, H, W)
-            restored_rgb = restored[:1]
+            restored_rgb = restored[:1].clamp(0, 1)  # clamp for LPIPS
             lpips_val = self.calc_lpips(restored_rgb, clean_rgb).item()
             self.log("val_lpips", lpips_val, sync_dist=True, batch_size=1)
 
@@ -197,17 +196,21 @@ def main(opt):
         except Exception as e:
             print(f"[WARN] Could not create validation dataset: {e}")
 
+    # Multi-GPU strategy (auto for single GPU, DDP for 2+)
+    strategy = "ddp_find_unused_parameters_true" if opt.num_gpus > 1 else "auto"
+
     # Create trainer
     trainer = pl.Trainer(
         max_epochs=opt.epochs,
         accelerator="gpu",
         devices=opt.num_gpus,
-        strategy="ddp_find_unused_parameters_true",
+        strategy=strategy,
         logger=logger,
         callbacks=[checkpoint_callback],
         accumulate_grad_batches=opt.accum_grad,
         deterministic=True,
-        check_val_every_n_epoch=5)
+        check_val_every_n_epoch=5,
+        enable_model_summary=False)
 
     # Optionally resume from a checkpoint
     if opt.resume_from:
