@@ -117,9 +117,8 @@ class PLTrainModel(pl.LightningModule):
 
         # LPIPS on RGB (batch=1, single sample)
         if self.calc_lpips is not None:
-            # Ensure tensors are on the right device
             clean_rgb = clean_patch[:1]  # shape (1, C, H, W)
-            restored_rgb = restored[:1]
+            restored_rgb = restored[:1].clamp(0, 1)  # clamp for LPIPS
             lpips_val = self.calc_lpips(restored_rgb, clean_rgb).item()
             self.log("val_lpips", lpips_val, sync_dist=True, batch_size=1)
 
