@@ -1,10 +1,11 @@
 """
-MoCE-IR inference on a flat folder of LR images.
+MoCE-IR inference on a flat folder of LQ images.
+LQ = Low-Quality (not Low-Resolution) — image restoration task.
 Works on both main and feat/classifier-routing branches.
 
 Usage:
-  python infer.py --input_dir ./lr --weights ./checkpoints/xxx/last.ckpt
-  python infer.py --input_dir ./lr --weights ./model.pth --output_dir ./out --device cuda:1
+  python infer.py --input_dir ./folder of --weights ./checkpoints/xxx/last.ckpt
+  python infer.py --input_dir ./folder of --weights ./model.pth --output_dir ./out --device cuda:1
 """
 
 import os
@@ -78,7 +79,7 @@ def infer_folder(model, input_dir: str, output_dir: str, device: str = 'cuda'):
 
 def main():
     p = argparse.ArgumentParser(description='MoCE-IR inference')
-    p.add_argument('--input_dir', required=True, help='Folder of LR images (flat)')
+    p.add_argument('--input_dir', required=True, help='Folder of LQ images (flat)')
     p.add_argument('--weights', required=True, help='Checkpoint path (.ckpt / .pth)')
     p.add_argument('--output_dir', default=None, help='Output folder (default: ./restored)')
     p.add_argument('--device', default='cuda', help='Device')
