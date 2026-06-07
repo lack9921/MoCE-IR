@@ -32,13 +32,19 @@ def load_model(ckpt_path: str, device: str = 'cuda'):
     else:
         sd = raw
 
-    # Detect if this is a classifier checkpoint
+    # Detect dim from patch_embed weight shape
+    pe_key = [k for k in sd if 'patch_embed.proj.weight' in k]
+    dim = sd[pe_key[0]].shape[0] if pe_key else 48
+    print(f'  Detected dim={dim}')
+
     has_cls = any('classifier' in k for k in sd)
 
     model = MoCEIR(
-        dim=48, num_blocks=[4, 6, 6, 8], num_dec_blocks=[2, 4, 4],
+        dim=dim, num_blocks=[4, 6, 6, 8], num_dec_blocks=[2, 4, 4],
         levels=4, heads=[1, 2, 4, 8], num_refinement_blocks=4,
-        topk=1, num_experts=4, rank=2, with_complexity=True,
+        topk=1, num_experts=4, rank=2,
+        with_complexity=True, complexity_scale='max',
+        rank_type='spread', depth_type='constant', stage_depth=[1, 1, 1],
     )
     missing, unexpected = model.load_state_dict(sd, strict=False)
 
