@@ -57,40 +57,79 @@ def load_checkpoint(ckpt_path: str):
     dim = sd[pe_key[0]].shape[0] if pe_key else 48
     print(f"  Detected dim={dim}")
 
-    # Detect num_blocks from encoder groups
-    enc_keys = [k for k in sd if k.startswith('enc.') and 'residual_group.blocks' in k]
-    max_levels = 0
+    # ── Detect encoder levels ──
+    enc_keys = [k for k in sd if k.startswith('enc.') and '.layers.' in k]
+    max_level = 0
     for k in enc_keys:
         try:
             level = int(k.split('.')[1])
-            max_levels = max(max_levels, level + 1)
+            max_level = max(max_level, level + 1)
         except (ValueError, IndexError):
             pass
-    levels = max(4, max_levels)
+    levels = max(4, max_level)
 
-    heads = []
+    # ── Detect heads from temperature/shared param shapes ──
+    # MoCEIR heads = [h0, h1, ..., hn] where n = levels
+    # Encoder uses h0..h(n-2), Latent uses h(n-1)
+    # Decoder REVERSES heads: dec.0→h(n-1), dec.1→h(n-2), ...
+    # Refinement uses reversed heads[0] = h(n-1)
+    #
+    # Temperature shape = [num_heads, 1, 1] — scan decoder keys for reliability
+    def _scan_head(sd, key_substr):
+        for k in sd:
+            if key_substr in k and ('temperature' in k or 'shared' in k):
+                return int(sd[k].shape[0])
+        return None
+
+    # Read heads from decoder (reliable — CrossAttention always has temperature)
+    dec_nhs = {}
+    for di in range(10):
+        nh = _scan_head(sd, f'dec.{di}.')
+        if nh is not None:
+            dec_nhs[di] = nh
+
+    # Reconstruct original heads array from decoder mapping
+    # dec[di] → reversed heads[di] → original heads[levels-1-di]
+    h_vals = [6] * levels
+    for di, nh in dec_nhs.items():
+        orig = levels - 1 - di
+        if 0 <= orig < levels:
+            h_vals[orig] = nh
+
+    # Fill any still-default ones from encoder keys
+    for i in range(levels):
+        if h_vals[i] == 6:
+            nh = _scan_head(sd, f'enc.{i}.')
+            if nh is not None:
+                h_vals[i] = nh
+
+    if h_vals[-1] == 6:  # try latent
+        nh = _scan_head(sd, 'latent.')
+        if nh is not None:
+            h_vals[-1] = nh
+
+    heads = [max(1, x) for x in h_vals]
+
+    # ── Detect num_blocks from encoder groups ──
     num_blocks = []
     for i in range(levels - 1):
-        bk = [k for k in sd if k.startswith(f'enc.{i}.0.residual_group.blocks.')]
-        hk = [k for k in sd if f'enc.{i}.0.residual_group.blocks.0.attn' in k]
-        num_blocks.append(max((int(k.split('blocks.')[1].split('.')[0]) for k in bk), default=4) + 1)
-        heads.append(6)  # fallback, usually 6 for MoCEIR
-
+        bk = [k for k in sd if k.startswith(f'enc.{i}.0.layers.')]
+        num_blocks.append(max((int(k.split('layers.')[1].split('.')[0]) for k in bk), default=4) + 1)
     # Latent block count
-    latent_blocks = [k for k in sd if k.startswith('latent.residual_group.blocks.')]
-    latent_n = max((int(k.split('blocks.')[1].split('.')[0]) for k in latent_blocks), default=4) + 1
+    latent_blocks = [k for k in sd if k.startswith('latent.layers.')]
+    latent_n = max((int(k.split('layers.')[1].split('.')[0]) for k in latent_blocks), default=4) + 1
     num_blocks.append(latent_n)
 
-    # Decoder blocks
+    # ── Decoder blocks ──
     num_dec_blocks = []
     for i in range(levels - 1):
-        dk = [k for k in sd if k.startswith(f'dec.{i}.2.residual_group.blocks.')]
-        num_dec_blocks.append(max((int(k.split('blocks.')[1].split('.')[0]) for k in dk), default=3) + 1)
+        dk = [k for k in sd if k.startswith(f'dec.{i}.2.layers.')]
+        num_dec_blocks.append(max((int(k.split('layers.')[1].split('.')[0]) for k in dk), default=3) + 1)
     num_dec_blocks = num_dec_blocks[::-1] if num_dec_blocks else [1, 1, 1]
 
-    # Refinement blocks
-    ref_blocks = [k for k in sd if k.startswith('refinement.residual_group.blocks.')]
-    num_refinement_blocks = max((int(k.split('blocks.')[1].split('.')[0]) for k in ref_blocks), default=3) + 1
+    # ── Refinement blocks ──
+    ref_blocks = [k for k in sd if k.startswith('refinement.layers.')]
+    num_refinement_blocks = max((int(k.split('layers.')[1].split('.')[0]) for k in ref_blocks), default=3) + 1
 
     # Detect classifier routing
     has_cls = any('classifier' in k for k in sd)
@@ -120,7 +159,7 @@ def load_checkpoint(ckpt_path: str):
         'num_blocks': num_blocks,
         'num_dec_blocks': num_dec_blocks,
         'levels': levels,
-        'heads': [h if h > 0 else 1 for h in heads] + [heads[-1] if heads else 1],
+        'heads': [max(1, h) for h in heads] if heads else [1, 1, 1, 1],
         'num_refinement_blocks': num_refinement_blocks,
         'topk': 2,
         'num_experts': num_experts,
