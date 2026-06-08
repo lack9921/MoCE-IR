@@ -75,18 +75,23 @@ def load_checkpoint(ckpt_path: str):
     # Refinement uses reversed heads[0] = h(n-1)
     #
     # Temperature shape = [num_heads, 1, 1] — scan decoder keys for reliability
-    def _scan_head(sd, key_substr):
+    def _scan_head(sd, key_substr, debug=False):
         for k in sd:
             if key_substr in k and ('temperature' in k or 'shared' in k):
-                return int(sd[k].shape[0])
+                val = int(sd[k].shape[0])
+                if debug:
+                    print(f'      [debug] {k} → heads={val}')
+                return val
         return None
 
     # Read heads from decoder (reliable — CrossAttention always has temperature)
     dec_nhs = {}
     for di in range(10):
-        nh = _scan_head(sd, f'dec.{di}.')
+        nh = _scan_head(sd, f'dec.{di}.', debug=True)
         if nh is not None:
             dec_nhs[di] = nh
+
+    print(f'  [debug] Decoder heads found: {dec_nhs}')
 
     # Reconstruct original heads array from decoder mapping
     # dec[di] → reversed heads[di] → original heads[levels-1-di]
@@ -95,20 +100,24 @@ def load_checkpoint(ckpt_path: str):
         orig = levels - 1 - di
         if 0 <= orig < levels:
             h_vals[orig] = nh
+            print(f'  [debug] dec.{di} ({nh}h) → orig heads[{orig}] = {nh}')
 
     # Fill any still-default ones from encoder keys
     for i in range(levels):
         if h_vals[i] == 6:
-            nh = _scan_head(sd, f'enc.{i}.')
+            nh = _scan_head(sd, f'enc.{i}.', debug=True)
             if nh is not None:
                 h_vals[i] = nh
+                print(f'  [debug] enc.{i} ({nh}h) → heads[{i}] = {nh}')
 
     if h_vals[-1] == 6:  # try latent
-        nh = _scan_head(sd, 'latent.')
+        nh = _scan_head(sd, 'latent.', debug=True)
         if nh is not None:
             h_vals[-1] = nh
+            print(f'  [debug] latent ({nh}h) → heads[{levels-1}] = {nh}')
 
     heads = [max(1, x) for x in h_vals]
+    print(f'  [debug] Final heads: {heads}  (reversed for decoder: {heads[::-1]})')
 
     # ── Detect num_blocks from encoder groups ──
     num_blocks = []
@@ -309,6 +318,8 @@ def main():
     parser.add_argument('--check-full', action='store_true', help='Test ALL images')
     parser.add_argument('--dim', type=int, default=None, help='Override base dim')
     parser.add_argument('--device', type=str, default='cuda', help='Device')
+    parser.add_argument('--heads', type=str, default=None,
+                        help='Override heads array: comma-separated, e.g. 1,2,4,8')
     args = parser.parse_args()
 
     device = args.device if torch.cuda.is_available() and 'cuda' in args.device else 'cpu'
@@ -319,6 +330,11 @@ def main():
     sd, cfg = load_checkpoint(args.weights)
     if args.dim:
         cfg['dim'] = args.dim
+
+    if args.heads:
+        heads_override = [int(x.strip()) for x in args.heads.split(',')]
+        print(f'  [--heads] Using manual heads: {heads_override}')
+        cfg['heads'] = heads_override
 
     model = build_model(sd, cfg, device)
 
