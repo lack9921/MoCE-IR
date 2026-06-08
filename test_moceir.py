@@ -151,7 +151,6 @@ def build_model(sd, cfg, device='cuda'):
         rank_type=cfg['rank_type'],
         depth_type=cfg['depth_type'],
         stage_depth=cfg['stage_depth'],
-        cls_dim=128 if cfg['has_cls'] else 0,
     )
     missing, unexpected = model.load_state_dict(sd, strict=False)
 
