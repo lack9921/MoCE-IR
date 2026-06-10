@@ -37,23 +37,36 @@ def load_model(ckpt_path: str, device: str = 'cuda'):
     dim = sd[pe_key[0]].shape[0] if pe_key else 48
     print(f'  Detected dim={dim}')
 
-    has_cls = any('classifier' in k for k in sd)
+    # Detect task embedding
+    has_cls = any('task_proj' in k or 'classifier' in k for k in sd)
+    cls_dim = 128 if has_cls else 0
 
     model = MoCEIR(
         dim=dim, num_blocks=[4, 6, 6, 8], num_dec_blocks=[2, 4, 4],
         levels=4, heads=[1, 2, 4, 8], num_refinement_blocks=4,
         topk=1, num_experts=4, rank=2,
-        with_complexity=True, complexity_scale='max',
+        with_complexity=has_cls, complexity_scale='max',
         rank_type='spread', depth_type='constant', stage_depth=[1, 1, 1],
+        cls_dim=cls_dim,
     )
-    missing, unexpected = model.load_state_dict(sd, strict=False)
 
+    # Handle freq_gate shape mismatch: old (E, 384) → new (E, 384 + cls_dim)
+    new_sd = model.state_dict()
+    for k in new_sd:
+        if k in sd and new_sd[k].shape == sd[k].shape:
+            new_sd[k] = sd[k]
+        elif k in sd and 'freq_gate.weight' in k and new_sd[k].shape != sd[k].shape:
+            d_old = sd[k].shape[1]
+            new_sd[k][:, :d_old] = sd[k][:, :d_old]
+            print(f'  freq_gate adapted: {k}')
+    model.load_state_dict(new_sd, strict=False)
+
+    n_loaded = sum(1 for k in new_sd if k in sd and new_sd[k].shape == sd[k].shape)
+    n_freq = sum(1 for k in new_sd if k in sd and 'freq_gate.weight' in k and new_sd[k].shape != sd[k].shape)
+    n_total = len(new_sd)
     print(f'  Params: {sum(p.numel() for p in model.parameters()):,}')
-    print(f'  Classifier: {"✅" if has_cls else "❌"}')
-    if has_cls and len(unexpected) > 0:
-        print(f'  ⚠️  Classifier keys not loaded — switch to feat/classifier-routing')
-    if len(missing) > 10:
-        print(f'  ⚠️  {len(missing)} missing keys — wrong checkpoint?')
+    print(f'  Task embedding: {"✅" if has_cls else "❌"} (cls_dim={cls_dim})')
+    print(f'  Weights: {n_loaded} exact + {n_freq} adapted = {n_loaded + n_freq}/{n_total}')
 
     return model.to(device).eval()
 
