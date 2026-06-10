@@ -175,8 +175,8 @@ def main(opt):
             print(f"[Fine-tune] Loading from {ckpt_path}")
             raw = torch.load(ckpt_path, map_location='cpu')
             old_sd = raw.get('state_dict', raw)
-            # Strip 'net.' prefix
-            old_sd = {k.replace('net.', ''): v for k, v in old_sd.items() if k.startswith('net.')}
+            # Keep 'net.' prefix — PLTrainModel.state_dict keys also have it
+            old_sd = {k: v for k, v in old_sd.items() if k.startswith('net.')}
             
             # Create model with new architecture
             model = PLTrainModel(opt)
@@ -193,8 +193,13 @@ def main(opt):
                     new_sd[k][:, :dim_old] = old_sd[k][:, :dim_old]
                     # cls_dim portion stays zero-initialized
             
+            # Count pre-loaded matched keys for logging
+            n_matched = sum(1 for k in new_sd if k in old_sd and new_sd[k].shape == old_sd[k].shape)
+            n_freq = sum(1 for k in new_sd if k in old_sd and 'freq_gate.weight' in k and new_sd[k].shape != old_sd[k].shape)
             model.load_state_dict(new_sd, strict=False)
-            print(f"  [✓] Loaded with freq_gate shape adaptation")
+            print(f"  [✓] Weights: {n_matched} keys exact match + {n_freq} freq_gate adapted = {n_matched + n_freq}/{len(new_sd)}")
+            if n_matched + n_freq < len(new_sd):
+                print(f"  [ℹ] New (random init): task_proj + task_cls ({len(new_sd) - n_matched - n_freq} keys)")
         else:
             print(f"  [!] Checkpoint not found: {ckpt_path}, starting from scratch")
             model = PLTrainModel(opt)
