@@ -9,6 +9,7 @@ from datetime import datetime
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 import lightning.pytorch as pl
 from torch.utils.data import DataLoader
@@ -39,6 +40,7 @@ class PLTrainModel(pl.LightningModule):
 
         self.opt = opt
         self.balance_loss_weight = opt.balance_loss_weight
+        self.cls_loss_weight = getattr(opt, 'cls_dim', 128) / 128.0 * 0.1
 
         self.net = MoCEIR(
             dim=opt.dim, 
@@ -54,7 +56,8 @@ class PLTrainModel(pl.LightningModule):
             depth_type=opt.depth_type, 
             stage_depth=opt.stage_depth, 
             rank_type=opt.rank_type, 
-            complexity_scale=opt.complexity_scale,)
+            complexity_scale=opt.complexity_scale,
+            cls_dim=getattr(opt, 'cls_dim', 128),)
 
         self.calc_lpips = None
         if opt.lovif:
@@ -83,6 +86,13 @@ class PLTrainModel(pl.LightningModule):
             loss = self.loss_fn(restored, clean_patch)
 
         loss += self.balance_loss_weight * balance_loss
+
+        # Task classification aux loss (helps task_proj learn routing signal)
+        if hasattr(self.net, 'cls_logits') and self.net.cls_logits is not None:
+            cls_loss = F.cross_entropy(self.net.cls_logits, de_id.long())
+            loss += self.cls_loss_weight * cls_loss
+            self.log("Cls_Loss", cls_loss, sync_dist=True)
+
         self.log("Train_Loss", loss, sync_dist=True)
         self.log("Balance", balance_loss, sync_dist=True)
         lr = self.trainer.optimizers[0].param_groups[0]["lr"]
@@ -159,8 +169,35 @@ def main(opt):
 
     # Create model
     if opt.fine_tune_from:
-        model = PLTrainModel.load_from_checkpoint(
-            os.path.join(opt.ckpt_dir, opt.fine_tune_from, "last.ckpt"), opt=opt)
+        # Load old checkpoint, handle freq_gate shape mismatch
+        ckpt_path = os.path.join(opt.ckpt_dir, opt.fine_tune_from, "last.ckpt")
+        if os.path.exists(ckpt_path):
+            print(f"[Fine-tune] Loading from {ckpt_path}")
+            raw = torch.load(ckpt_path, map_location='cpu')
+            old_sd = raw.get('state_dict', raw)
+            # Strip 'net.' prefix
+            old_sd = {k.replace('net.', ''): v for k, v in old_sd.items() if k.startswith('net.')}
+            
+            # Create model with new architecture
+            model = PLTrainModel(opt)
+            new_sd = model.state_dict()
+            
+            # Copy matching keys; handle freq_gate shape mismatch
+            for k in new_sd:
+                if k in old_sd and new_sd[k].shape == old_sd[k].shape:
+                    new_sd[k] = old_sd[k]
+                elif k in old_sd and 'freq_gate.weight' in k:
+                    # Shape mismatch: old (E, freq_dim) → new (E, freq_dim + cls_dim)
+                    dim_old = old_sd[k].shape[1]
+                    print(f"  Shape mismatch {k}: old{tuple(old_sd[k].shape)} → new{tuple(new_sd[k].shape)}, copying first {dim_old} dims")
+                    new_sd[k][:, :dim_old] = old_sd[k][:, :dim_old]
+                    # cls_dim portion stays zero-initialized
+            
+            model.load_state_dict(new_sd, strict=False)
+            print(f"  [✓] Loaded with freq_gate shape adaptation")
+        else:
+            print(f"  [!] Checkpoint not found: {ckpt_path}, starting from scratch")
+            model = PLTrainModel(opt)
     else:
         model = PLTrainModel(opt)
 

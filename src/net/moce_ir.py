@@ -759,6 +759,7 @@ class MoCEIR(nn.Module):
                 expert_layer=FFTAttention,
                 with_complexity=False,
                 complexity_scale="max",
+                cls_dim=0,
                 ):
         super(MoCEIR, self).__init__()
         
@@ -770,9 +771,20 @@ class MoCEIR(nn.Module):
         dims = [dim*2**i for i in range(levels)]
         ranks = [rank for i in range(levels-1)]
 
-        # -- Patch Embedding
+        # -- Patch Embedding & Task Embedding
         self.patch_embed = OverlapPatchEmbed(in_c=inp_channels, embed_dim=dim, bias=False)
         self.freq_embed = FrequencyEmbedding(dims[-1])
+
+        # Task embedding: lightweight classifier from bottleneck features
+        self.cls_dim = cls_dim
+        if cls_dim > 0:
+            self.task_proj = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                nn.Flatten(),
+                nn.Linear(dims[-1], cls_dim),
+            )
+            # Aux classification head for training supervision
+            self.task_cls = nn.Linear(cls_dim, 5)
                 
         # -- Encoder --        
         self.enc = nn.ModuleList([])
@@ -812,7 +824,7 @@ class MoCEIR(nn.Module):
                     num_blocks=num_dec_blocks[i], 
                     num_heads=heads[i+1],
                     ffn_expansion=ffn_expansion_factor, 
-                    LayerNorm_type=LayerNorm_type, bias=bias, expert_layer=expert_layer, freq_dim=dims[0], with_complexity=with_complexity,
+                    LayerNorm_type=LayerNorm_type, bias=bias, expert_layer=expert_layer, freq_dim=dims[0] + cls_dim, with_complexity=with_complexity,
                     rank=ranks[i], num_experts=num_experts, stage_depth=stage_depth[i], depth_type=depth_type, rank_type=rank_type, top_k=topk, complexity_scale=complexity_scale),
                 ])
             )
@@ -842,6 +854,13 @@ class MoCEIR(nn.Module):
         
         feats = self.latent(feats)
         freq_emb = self.freq_embed(feats)
+
+        # Task embedding from bottleneck features → concat with freq_emb
+        if self.cls_dim > 0:
+            task_feat = feats.mean(dim=(-2, -1))  # (B, dims[-1])
+            cls_emb = self.task_proj(task_feat)   # (B, cls_dim)
+            self.cls_logits = self.task_cls(cls_emb)  # (B, 5) — for aux loss
+            freq_emb = torch.cat([freq_emb, cls_emb], dim=-1)  # (B, dims[0] + cls_dim)
                 
         for i, (upsample, fusion, block) in enumerate(self.dec):
             feats = upsample(feats)
