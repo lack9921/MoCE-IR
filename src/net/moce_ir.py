@@ -857,8 +857,7 @@ class MoCEIR(nn.Module):
 
         # Task embedding from bottleneck features → concat with freq_emb
         if self.cls_dim > 0:
-            task_feat = feats.mean(dim=(-2, -1))  # (B, dims[-1])
-            cls_emb = self.task_proj(task_feat)   # (B, cls_dim)
+            cls_emb = self.task_proj(feats)       # (B, cls_dim) — task_proj has AdaptiveAvgPool2d inside
             self.cls_logits = self.task_cls(cls_emb)  # (B, 5) — for aux loss
             freq_emb = torch.cat([freq_emb, cls_emb], dim=-1)  # (B, dims[0] + cls_dim)
                 
