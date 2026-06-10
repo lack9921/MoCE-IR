@@ -408,7 +408,7 @@ def main():
                     if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tif'))
                 ])
                 if files:
-                    data_sources[task] = [(lq_dir, files)]
+                    data_sources[task] = (lq_dir, files)
                     print(f"  {task}: {len(files)} images")
                 else:
                     print(f"  {task}: 0 images found, using synthetic")
@@ -446,21 +446,12 @@ def main():
             print(f"[{task}] Generating samples and capturing routing...")
 
             if data_sources[task] is not None:
-                # Real images
+                # Real images — process individually (varying sizes)
                 lq_dir, files = data_sources[task]
-                batch_size = args.batch
-                all_images = []
                 for fname in files[:100]:  # cap at 100 per task
                     img = Image.open(os.path.join(lq_dir, fname)).convert('RGB')
                     img_t = torch.from_numpy(np.array(img)).float().permute(2, 0, 1) / 255.0
-                    all_images.append(img_t)
-                    if len(all_images) >= batch_size:
-                        batch_tensor = torch.stack(all_images)  # (B, 3, H, W)
-                        run_task(task, batch_tensor)
-                        all_images = []
-                if all_images:
-                    batch_tensor = torch.stack(all_images)
-                    run_task(task, batch_tensor)
+                    run_task(task, img_t.unsqueeze(0))  # (1, 3, H, W)
                 n_samples = sum(len(v) for v in task_gates[task].values())
                 print(f"  → {n_samples} routing decisions captured from real images")
             else:
