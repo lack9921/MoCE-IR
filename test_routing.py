@@ -248,6 +248,9 @@ def load_checkpoint(ckpt_path: str):
     ref_blocks = [k for k in sd if k.startswith('refinement.layers.')]
     num_refinement_blocks = max((int(k.split('layers.')[1].split('.')[0]) for k in ref_blocks), default=3) + 1
 
+    # Detect task embedding (cls_dim) from new model format
+    cls_dim = 128 if any('task_proj' in k for k in sd) else 0
+
     return sd, {
         'dim': dim,
         'num_blocks': num_blocks,
@@ -263,6 +266,7 @@ def load_checkpoint(ckpt_path: str):
         'rank_type': 'spread',
         'depth_type': 'constant',
         'stage_depth': [1, 1, 1],
+        'cls_dim': cls_dim,
     }
 
 
@@ -325,6 +329,7 @@ def main():
     parser.add_argument('--rank_type', type=str, default='spread')
     parser.add_argument('--depth_type', type=str, default='constant')
     parser.add_argument('--stage_depth', type=int, nargs='+', default=[1, 1, 1])
+    parser.add_argument('--cls_dim', type=int, default=128, help='Task embedding dim (0=disable)')
 
     args = parser.parse_args()
     device = args.device if torch.cuda.is_available() and 'cuda' in args.device else 'cpu'
@@ -347,6 +352,7 @@ def main():
         rank_type=args.rank_type,
         depth_type=args.depth_type,
         stage_depth=args.stage_depth,
+        cls_dim=args.cls_dim,
     ).to(device).eval()
 
     # Load checkpoint if provided
@@ -371,6 +377,7 @@ def main():
                 rank_type=cfg['rank_type'],
                 depth_type=cfg['depth_type'],
                 stage_depth=cfg['stage_depth'],
+                cls_dim=cfg.get('cls_dim', 0),
             ).to(device).eval()
             model.load_state_dict(sd, strict=False)
         else:
