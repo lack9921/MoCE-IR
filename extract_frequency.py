@@ -153,7 +153,7 @@ def save_frequency_viz(image_path, freq_response, freq_emb, task, fname_out, out
 
     # ── Frequency embedding vector strip ──
     fig, ax = plt.subplots(1, 1, figsize=(8, 2))
-    im = ax.imshow(strip_norm[np.newaxis, :], cmap='viridis', aspect='auto')
+    im = ax.imshow(strip_norm, cmap='viridis', aspect='auto')
     ax.set_title(f'Frequency Embedding Vector ({emb.shape[0]}d)')
     ax.set_yticks([])
     plt.colorbar(im, ax=ax, fraction=0.046, orientation='horizontal')
