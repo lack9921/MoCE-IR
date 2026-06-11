@@ -24,6 +24,7 @@ from options import train_options
 from utils.schedulers import LinearWarmupCosineAnnealingLR
 from data.dataset_utils import AIOTrainDataset, CDD11, LoViFDataset, LoViFValDataset
 from utils.loss_utils import FFTLoss
+from utils.routing_monitor import RoutingMonitor
 
 # Track names for per-track logging
 LOVIF_TRACK_NAMES = ['blur', 'haze', 'lowlight', 'rain', 'snow']
@@ -248,7 +249,7 @@ def main(opt):
         devices=opt.num_gpus,
         strategy=strategy,
         logger=logger,
-        callbacks=[checkpoint_callback],
+        callbacks=[checkpoint_callback, RoutingMonitor()],
         accumulate_grad_batches=opt.accum_grad,
         deterministic=True,
         check_val_every_n_epoch=5,
