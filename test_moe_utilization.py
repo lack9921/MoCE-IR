@@ -1,29 +1,30 @@
 #!/usr/bin/env python3
 """
-test_moe_utilization.py — Per-image MoE utilization visualization.
-
-For a single input image, runs through the model and shows
-which experts are used in each of the 10 AdapterLayers.
+test_moe_utilization.py — Per-task average MoE utilization across full test set.
 
 Usage:
   python test_moe_utilization.py \
-      --image /path/to/image.png \
       --weights /path/to/checkpoint.ckpt \
+      --input /path/to/LoViF/test \
       --device cuda
 
 Output:
-  Per-layer × expert gate heatmap table
-  Overall expert utilization summary
+  Per-task × per-layer expert gate heatmap
+  Average expert utilization across all layers
 """
 
 import os, sys, argparse
 from PIL import Image
+from collections import defaultdict
 
 import torch
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 from net.moce_ir import MoCEIR, AdapterLayer
+
+TASKS = ['Blur', 'Haze', 'Lowlight', 'Rain', 'Snow']
+EXPERT_COLORS = ['🟦', '🟩', '🟨', '🟥']
 
 
 def load_model(ckpt_path, device='cuda'):
@@ -32,12 +33,10 @@ def load_model(ckpt_path, device='cuda'):
         sd = {k.replace('net.', ''): v for k, v in raw['state_dict'].items() if k.startswith('net.')}
     else:
         sd = raw
-
     pe_key = [k for k in sd if 'patch_embed.proj.weight' in k]
     dim = sd[pe_key[0]].shape[0] if pe_key else 48
     has_cls = any('task_proj' in k for k in sd)
     cls_dim = 128 if has_cls else 0
-
     model = MoCEIR(
         dim=dim, num_blocks=[4, 6, 6, 8], num_dec_blocks=[2, 4, 4],
         levels=4, heads=[1, 2, 4, 8], num_refinement_blocks=4,
@@ -46,7 +45,6 @@ def load_model(ckpt_path, device='cuda'):
         rank_type='spread', depth_type='constant', stage_depth=[1, 1, 1],
         cls_dim=cls_dim,
     )
-
     new_sd = model.state_dict()
     for k in new_sd:
         if k in sd and new_sd[k].shape == sd[k].shape:
@@ -72,31 +70,20 @@ def find_adapters(module, prefix=''):
 @torch.no_grad()
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--image', type=str, required=True, help='Path to a single image')
     parser.add_argument('--weights', type=str, required=True)
+    parser.add_argument('--input', type=str, required=True, help='LoViF dataset root')
     parser.add_argument('--device', type=str, default='cuda')
+    parser.add_argument('--max-per-task', type=int, default=100)
     args = parser.parse_args()
 
     device = args.device if torch.cuda.is_available() and 'cuda' in args.device else 'cpu'
     print(f"[*] Loading model...")
     model = load_model(args.weights, device)
     adapters = list(find_adapters(model))
-    E = 4  # num experts
-    expert_colors = ['🟦', '🟩', '🟨', '🟥']
+    print(f"[*] Found {len(adapters)} AdapterLayers")
 
-    # ── Load image ──
-    img = Image.open(args.image).convert('RGB')
-    w, h = img.size
-    pw, ph = (16 - w % 16) % 16, (16 - h % 16) % 16
-    from torchvision import transforms
-    tensor = transforms.ToTensor()(img).unsqueeze(0).to(device)  # (1,3,H,W)
-    if pw or ph:
-        tensor = torch.nn.functional.pad(tensor, (0, pw, 0, ph))
-    print(f"[*] Image: {args.image} ({w}x{h})")
-
-    # ── Monkey-patch to capture gates ──
-    captured_gates = {}
-    captured_expert_outs = {}
+    # Install gate-capture hook
+    captured = defaultdict(list)  # {(name, task): list of gates tensors}
 
     orig_forward = AdapterLayer.forward
     def patched_forward(self, x, freq_emb, shared):
@@ -105,115 +92,131 @@ def main():
             if a is self:
                 name = n
                 break
-
-        # Capture routing gates
-        gates, top_k_indices, top_k_values, _ = self.routing(x, freq_emb)
-        captured_gates[name] = gates[0].detach().cpu()  # (E,)
-
-        # Also capture per-expert raw outputs
-        expert_outs = {}
-        for ei in range(E):
-            expert_outs[ei] = self.experts[ei](x, shared)
-        captured_expert_outs[name] = {
-            ei: out.detach().cpu() for ei, out in expert_outs.items()
-        }
-
+        gates, *_ = self.routing(x, freq_emb)
+        # We'll attach the task label later through the call chain
+        captured[name].append(gates[0].detach().cpu())
         return orig_forward(self, x, freq_emb, shared)
 
     AdapterLayer.forward = patched_forward
 
-    # Run
-    _ = model(tensor)
+    from torchvision import transforms
+    to_tensor = transforms.ToTensor()
+
+    # Track per-task gates
+    task_gates = {t: {n: [] for n, _ in adapters} for t in TASKS}
+
+    for task in TASKS:
+        lq_dir = os.path.join(args.input, task, 'LQ')
+        if not os.path.isdir(lq_dir):
+            print(f"  [!] No LQ dir: {lq_dir}")
+            continue
+
+        files = sorted([f for f in os.listdir(lq_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tif'))])
+        files = files[:args.max_per_task]
+
+        for fname in files:
+            img = Image.open(os.path.join(lq_dir, fname)).convert('RGB')
+            w, h = img.size
+            pw, ph = (16 - w % 16) % 16, (16 - h % 16) % 16
+            tensor = to_tensor(img).unsqueeze(0).to(device)
+            if pw or ph:
+                tensor = torch.nn.functional.pad(tensor, (0, pw, 0, ph))
+
+            captured.clear()
+            _ = model(tensor)
+
+            for name, gates_list in captured.items():
+                task_gates[task][name].extend(gates_list)
+
+        print(f"  [{task}] {len(files)} images ✓")
+
     AdapterLayer.forward = orig_forward
 
     # ── Print results ──
+    E = 4
+
+    # Per-layer × per-task heatmap
     print("\n" + "=" * 72)
-    print(f"  MoE Utilization — Per-Layer Gate Values")
-    print(f"  (top_k={model.dec[0][2].layers[0].adapter.top_k if hasattr(model.dec[0][2].layers[0].adapter, 'top_k') else '?'})")
+    print("  Average Expert Gate Values per Layer per Task")
     print("=" * 72)
+    print()
 
-    header = f"  {'Layer':<12} "
-    header += "  ".join([f"{expert_colors[e]} Expert{e:<5}" for e in range(E)])
-    print(header)
-    print(f"  {'─' * 12}─" + "─" * 14 * E)
-
-    all_gates = []
-    layer_gates = {}
-    for name, adapter in adapters:
-        gates = captured_gates[name]
-        all_gates.append(gates)
-        layer_gates[name] = gates
-
-        gate_strs = []
+    for name, _ in adapters:
+        print(f"  ── {name} ──")
+        hdr = f"  {'Task':<10} "
         for e in range(E):
-            v = gates[e].item()
-            if v > 0.5:
-                bar = '████'
-            elif v > 0.3:
-                bar = '██▓░'
-            elif v > 0.1:
-                bar = '██░░'
-            elif v > 0.01:
-                bar = '▓░░░'
-            else:
-                bar = '░░░░'
-            gate_strs.append(f"{bar} {v:.3f}")
+            hdr += f"  {EXPERT_COLORS[e]} E{e}     "
+        print(hdr)
+        print(f"  {'─' * 10}─" + "─" * 11 * E)
 
-        print(f"  {name:<12} │ {'  '.join(gate_strs)}")
+        for task in TASKS:
+            gates_list = task_gates[task][name]
+            if not gates_list:
+                continue
+            g = torch.stack(gates_list).mean(dim=0)  # (E,)
 
-    # ── Summary per layer ──
-    print("\n" + "=" * 72)
-    print("  Dominant Expert per Layer")
+            bar_str = []
+            for e in range(E):
+                v = g[e].item()
+                bar_len = int(v * 30)
+                bar = '█' * bar_len + '░' * (30 - bar_len)
+                bar_str.append(f"{bar} {v:.3f}")
+            print(f"  {task:<10} │ {'  '.join(bar_str)}")
+        print()
+
+    # Cross-layer dominant expert matrix
     print("=" * 72)
-    print(f"  {'Layer':<12} {'Dominant':<10} {'Confidence':<12} {'Active Experts'}")
-    print(f"  {'─' * 12}─{'─' * 10}─{'─' * 12}─{'─' * 20}")
-
-    for name, adapter in adapters:
-        gates = captured_gates[name]
-        de = gates.argmax().item()
-        conf = gates[de].item()
-        active = [e for e in range(E) if gates[e].item() > 0.01]
-        active_str = " ".join([f"{expert_colors[e]}E{e}" for e in active])
-        print(f"  {name:<12} {expert_colors[de]}E{de:<7} {conf:.3f} ({conf*100:.0f}%)   {active_str}")
-
-    # ── Overall statistics ──
-    print("\n" + "=" * 72)
-    print("  Overall Expert Utilization (across all 10 layers)")
+    print("  Dominant Expert Matrix (most-used expert per layer per task)")
     print("=" * 72)
+    print(f"  {'Layer':<20} ", end="")
+    for task in TASKS:
+        print(f"  {task:<10}", end="")
+    print()
+    print(f"  {'─' * 20}─" + "─" * 12 * len(TASKS))
 
-    all_gates_t = torch.stack(all_gates)  # (10, E)
-    avg_gates = all_gates_t.mean(dim=0)
+    for name, _ in adapters:
+        print(f"  {name:<20} ", end="")
+        for task in TASKS:
+            gates_list = task_gates[task][name]
+            if not gates_list:
+                print(f"  {'─':>10} ", end="")
+                continue
+            g = torch.stack(gates_list).mean(dim=0)
+            de = g.argmax().item()
+            cp = g[de].item()
+            print(f"  {EXPERT_COLORS[de]}E{de} {cp*100:.0f}%", end="")
+        print()
 
-    for e in range(E):
-        bar_len = int(avg_gates[e].item() * 40)
-        bar = '█' * bar_len + '░' * (40 - bar_len)
-        print(f"  {expert_colors[e]} Expert{e}  {bar}  {avg_gates[e].item():.3f}")
-
-    print(f"\n  Routing entropy (avg): {-(avg_gates * torch.log(avg_gates + 1e-8)).sum().item():.3f}")
-
-    # ── Expert Output Contribution ──
+    # Overall average utilization per task
     print("\n" + "=" * 72)
-    print("  Expert Output Magnitude (L2 norm of each expert's output)")
-    print("  (Higher = more influence on final output)")
+    print("  Overall Expert Utilization (avg across all 10 layers)")
     print("=" * 72)
 
-    for name, adapter in adapters:
-        outs = captured_expert_outs[name]
-        norms = {}
-        for ei in range(E):
-            norms[ei] = outs[ei].norm().item()
+    for task in TASKS:
+        # Average gates across all layers
+        all_avg = []
+        for name, _ in adapters:
+            gates_list = task_gates[task][name]
+            if gates_list:
+                all_avg.append(torch.stack(gates_list).mean(dim=0))
+        if not all_avg:
+            continue
+        avg_g = torch.stack(all_avg).mean(dim=0)
 
-        total = sum(norms.values())
-        pcts = {ei: v/total*100 for ei, v in norms.items()}
+        print(f"\n  [{task}]")
+        total = avg_g.sum().item()
+        for e in range(E):
+            pct = avg_g[e].item() / total * 100
+            bar_len = int(pct / 3)
+            bar = '█' * bar_len + '░' * (30 - bar_len)
+            print(f"  {EXPERT_COLORS[e]} E{e}: {bar} {pct:5.1f}%  (gate={avg_g[e].item():.3f})")
 
-        bar_str = []
-        for ei in range(E):
-            bar_len = int(pcts[ei] / 5)
-            bar = '█' * bar_len
-            bar_str.append(f"{expert_colors[ei]}{bar} {pcts[ei]:.0f}%")
-        print(f"  {name:<12} │ {'  '.join(bar_str)}")
+        # Entropy
+        p = avg_g / avg_g.sum()
+        H = -(p * torch.log(p + 1e-8)).sum().item()
+        print(f"  {'':>2} Routing entropy: {H:.3f}  (1.39=random, <0.5=deterministic)")
 
-    print(f"\n[*] Done.")
+    print("\n[*] Done.")
 
 
 if __name__ == '__main__':
