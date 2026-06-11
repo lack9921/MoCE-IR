@@ -170,24 +170,26 @@ def main():
     else:
         print(f"  🟢 VERDICT: Experts are genuinely different → routing SHOULD matter")
 
-    # ── Weight similarity (proj[0] and proj[2] only, proj[1] is shared) ──
-    print("\n" + "=" * 72)
-    print("  Expert Weight Similarity (proj[0] weights only — same shape across experts)")
-    print("=" * 72)
+    # ── Note: weight comparison skipped (experts have different rank shapes) ──
+    print("[*] Done.\n")
 
-    for name, adapter in adapters:
-        cos_w = torch.zeros((4, 4))
-        for i in range(4):
-            wi = adapter.experts[i][0].proj[0].weight.detach().flatten().cpu()
-            for j in range(4):
-                wj = adapter.experts[j][0].proj[0].weight.detach().flatten().cpu()
-                cos_w[i, j] = torch.nn.functional.cosine_similarity(
-                    wi.unsqueeze(0), wj.unsqueeze(0)
-                ).item()
-        off_diag_w = [cos_w[i, j].item() for i in range(4) for j in range(4) if i != j]
-        print(f"  [{name}] proj[0] weight cos: {np.mean(off_diag_w):.4f}")
 
-    print("\n[*] Done.\n")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 if __name__ == '__main__':
