@@ -110,12 +110,16 @@ def save_frequency_viz(image_path, freq_response, freq_emb, task, fname_out, out
     resp_min, resp_max = resp_mag.min(), resp_mag.max()
     resp_norm = ((resp_mag - resp_min) / (resp_max - resp_min + 1e-8) * 255).astype(np.uint8)
 
-    # Frequency embedding vector (128-dim or freq_dim)
-    emb = freq_emb[0].cpu().numpy()  # (freq_dim,)
-    # Reshape into a colored strip for visualization
-    strip_w = max(1, int(np.ceil(np.sqrt(emb.shape[0]))))
-    strip_h = int(np.ceil(emb.shape[0] / strip_w))
-    strip = emb[:strip_w * strip_h].reshape(strip_h, strip_w)
+    # Frequency embedding vector (freq_dim)
+    emb = freq_emb[0].cpu().numpy()
+    # Reshape into most-square rectangle for visualization
+    n = emb.shape[0]
+    best_h = 1
+    for h in range(1, int(np.sqrt(n)) + 1):
+        if n % h == 0:
+            best_h = h
+    strip_h, strip_w = best_h, n // best_h
+    strip = emb.reshape(strip_h, strip_w)
     # Normalize strip
     s_min, s_max = strip.min(), strip.max()
     strip_norm = ((strip - s_min) / (s_max - s_min + 1e-8) * 255).astype(np.uint8)
