@@ -33,6 +33,7 @@ class RoutingMonitor(Callback):
         super().__init__()
         self._val_gates = defaultdict(list)  # {layer_name: [gates_tensor, ...]}
         self._val_deids = []
+        self._val_cls_logits = []  # per-batch cls_logits for accuracy
         self._adapter_names = []
         self._orig_rf_forward = None
         self._hooks_installed = False
@@ -109,6 +110,10 @@ class RoutingMonitor(Callback):
         _, de_id = meta
         self._val_deids.append(de_id.detach().cpu())
 
+        # Collect cls_logits from this batch (set during forward)
+        if hasattr(pl_module.net, 'cls_logits') and pl_module.net.cls_logits is not None:
+            self._val_cls_logits.append(pl_module.net.cls_logits.detach().cpu())
+
         if hasattr(pl_module.net, '_captured_val_gates'):
             for name, gates in pl_module.net._captured_val_gates.items():
                 self._val_gates[name].append(gates)
@@ -156,11 +161,13 @@ class RoutingMonitor(Callback):
                 occ_tag = f"expert_occupancy/{layer_name.replace('.', '_')}/E{e}"
                 pl_module.log(occ_tag, p[e].item() * 100, prog_bar=False, sync_dist=True)
 
-        # ③ Task Classification Accuracy
-        if hasattr(pl_module.net, 'cls_logits') and pl_module.net.cls_logits is not None and len(de_ids) > 0:
-            preds = pl_module.net.cls_logits.argmax(dim=1).detach().cpu()
-            acc = (preds == de_ids).float().mean().item()
-            pl_module.log('cls_accuracy/val', acc, prog_bar=False, sync_dist=True)
+        # ③ Task Classification Accuracy (using per-batch collected logits)
+        if self._val_cls_logits and len(de_ids) > 0:
+            all_logits = torch.cat(self._val_cls_logits, dim=0)  # (N, 5)
+            if all_logits.shape[0] == len(de_ids):
+                preds = all_logits.argmax(dim=1)
+                acc = (preds == de_ids).float().mean().item()
+                pl_module.log('cls_accuracy/val', acc, prog_bar=False, sync_dist=True)
 
         # ⑤ Expert Output Cosine Similarity (compute once per epoch)
         try:
@@ -216,5 +223,6 @@ class RoutingMonitor(Callback):
         # Clear buffers
         self._val_gates.clear()
         self._val_deids.clear()
+        self._val_cls_logits.clear()
         if hasattr(pl_module.net, '_captured_val_gates'):
             pl_module.net._captured_val_gates = {}
