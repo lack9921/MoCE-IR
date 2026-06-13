@@ -200,6 +200,12 @@ def build_model(sd, cfg, device='cuda'):
         depth_type=cfg['depth_type'],
         stage_depth=cfg['stage_depth'],
     )
+    # ── Filter shape mismatches (checkpoint may have different config) ──
+    model_sd_key = model.state_dict()
+    for k in list(sd.keys()):
+        if k in model_sd_key and sd[k].shape != model_sd_key[k].shape:
+            print(f"  ⚠ Shape mismatch: {k}  chk={list(sd[k].shape)}  mdl={list(model_sd_key[k].shape)}  → skip")
+            del sd[k]
     missing, unexpected = model.load_state_dict(sd, strict=False)
 
     n_params = sum(p.numel() for p in model.parameters())
