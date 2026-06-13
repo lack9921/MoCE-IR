@@ -9,6 +9,7 @@ from datetime import datetime
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 import lightning.pytorch as pl
 from torch.utils.data import DataLoader
@@ -23,6 +24,7 @@ from options import train_options
 from utils.schedulers import LinearWarmupCosineAnnealingLR
 from data.dataset_utils import AIOTrainDataset, CDD11, LoViFDataset, LoViFValDataset
 from utils.loss_utils import FFTLoss
+from utils.routing_monitor import RoutingMonitor
 
 # Track names for per-track logging
 LOVIF_TRACK_NAMES = ['blur', 'haze', 'lowlight', 'rain', 'snow']
@@ -39,6 +41,7 @@ class PLTrainModel(pl.LightningModule):
 
         self.opt = opt
         self.balance_loss_weight = opt.balance_loss_weight
+        self.cls_loss_weight = getattr(opt, 'cls_dim', 128) / 128.0 * 0.1
 
         self.net = MoCEIR(
             dim=opt.dim, 
@@ -54,7 +57,8 @@ class PLTrainModel(pl.LightningModule):
             depth_type=opt.depth_type, 
             stage_depth=opt.stage_depth, 
             rank_type=opt.rank_type, 
-            complexity_scale=opt.complexity_scale,)
+            complexity_scale=opt.complexity_scale,
+            cls_dim=getattr(opt, 'cls_dim', 128),)
 
         self.calc_lpips = None
         if opt.lovif:
@@ -83,6 +87,13 @@ class PLTrainModel(pl.LightningModule):
             loss = self.loss_fn(restored, clean_patch)
 
         loss += self.balance_loss_weight * balance_loss
+
+        # Task classification aux loss (helps task_proj learn routing signal)
+        if hasattr(self.net, 'cls_logits') and self.net.cls_logits is not None:
+            cls_loss = F.cross_entropy(self.net.cls_logits, de_id.long())
+            loss += self.cls_loss_weight * cls_loss
+            self.log("Cls_Loss", cls_loss, sync_dist=True)
+
         self.log("Train_Loss", loss, sync_dist=True)
         self.log("Balance", balance_loss, sync_dist=True)
         lr = self.trainer.optimizers[0].param_groups[0]["lr"]
@@ -159,8 +170,40 @@ def main(opt):
 
     # Create model
     if opt.fine_tune_from:
-        model = PLTrainModel.load_from_checkpoint(
-            os.path.join(opt.ckpt_dir, opt.fine_tune_from, "last.ckpt"), opt=opt)
+        # Load old checkpoint, handle freq_gate shape mismatch
+        ckpt_path = os.path.join(opt.ckpt_dir, opt.fine_tune_from, "last.ckpt")
+        if os.path.exists(ckpt_path):
+            print(f"[Fine-tune] Loading from {ckpt_path}")
+            raw = torch.load(ckpt_path, map_location='cpu')
+            old_sd = raw.get('state_dict', raw)
+            # Keep 'net.' prefix — PLTrainModel.state_dict keys also have it
+            old_sd = {k: v for k, v in old_sd.items() if k.startswith('net.')}
+            
+            # Create model with new architecture
+            model = PLTrainModel(opt)
+            new_sd = model.state_dict()
+            
+            # Copy matching keys; handle freq_gate shape mismatch
+            for k in new_sd:
+                if k in old_sd and new_sd[k].shape == old_sd[k].shape:
+                    new_sd[k] = old_sd[k]
+                elif k in old_sd and 'freq_gate.weight' in k:
+                    # Shape mismatch: old (E, freq_dim) → new (E, freq_dim + cls_dim)
+                    dim_old = old_sd[k].shape[1]
+                    print(f"  Shape mismatch {k}: old{tuple(old_sd[k].shape)} → new{tuple(new_sd[k].shape)}, copying first {dim_old} dims")
+                    new_sd[k][:, :dim_old] = old_sd[k][:, :dim_old]
+                    # cls_dim portion stays zero-initialized
+            
+            # Count pre-loaded matched keys for logging
+            n_matched = sum(1 for k in new_sd if k in old_sd and new_sd[k].shape == old_sd[k].shape)
+            n_freq = sum(1 for k in new_sd if k in old_sd and 'freq_gate.weight' in k and new_sd[k].shape != old_sd[k].shape)
+            model.load_state_dict(new_sd, strict=False)
+            print(f"  [✓] Weights: {n_matched} keys exact match + {n_freq} freq_gate adapted = {n_matched + n_freq}/{len(new_sd)}")
+            if n_matched + n_freq < len(new_sd):
+                print(f"  [ℹ] New (random init): task_proj + task_cls ({len(new_sd) - n_matched - n_freq} keys)")
+        else:
+            print(f"  [!] Checkpoint not found: {ckpt_path}, starting from scratch")
+            model = PLTrainModel(opt)
     else:
         model = PLTrainModel(opt)
 
@@ -206,7 +249,7 @@ def main(opt):
         devices=opt.num_gpus,
         strategy=strategy,
         logger=logger,
-        callbacks=[checkpoint_callback],
+        callbacks=[checkpoint_callback, RoutingMonitor()],
         accumulate_grad_batches=opt.accum_grad,
         deterministic=True,
         check_val_every_n_epoch=5,
