@@ -87,22 +87,6 @@ def moce_ir(parser):
     parser.add_argument('--cls_dim', type=int, default=128)
     return parser
 
-def moce_ir(parser):
-    parser.add_argument('--dim', type=int, default=48)
-    parser.add_argument('--num_blocks', nargs='+', type=int, default=[4, 6, 6, 8])
-    parser.add_argument('--num_dec_blocks', nargs='+', type=int, default=[2, 4, 4])
-    parser.add_argument('--latent_dim', type=int, default=2)
-    parser.add_argument('--num_exp_blocks', type=int, default=4)
-    parser.add_argument('--num_refinement_blocks', type=int, default=4)
-    parser.add_argument('--heads', nargs='+', type=int, default=[1, 2, 4, 8])
-    parser.add_argument('--stage_depth', nargs='+', type=int, default=[1, 1, 1])
-    parser.add_argument('--with_complexity', action="store_true")
-    parser.add_argument('--complexity_scale', type=str, default="max")
-    parser.add_argument('--rank_type', default="spread")
-    parser.add_argument('--depth_type', default="constant")
-    parser.add_argument('--topk', type=int, default=1)
-    return parser
-
 def train_options():
     base_args = base_parser().parse_known_args()[0]
     
